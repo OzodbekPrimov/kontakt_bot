@@ -1,0 +1,1 @@
+"""Kontakt bot application package."""
