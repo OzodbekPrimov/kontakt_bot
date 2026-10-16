@@ -1,0 +1,16 @@
+[Unit]
+Description=Kontakt Telegram Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=newuser
+WorkingDirectory=/home/newuser/contact_bot
+ExecStart=/home/newuser/contact_bot/.venv/bin/python -u -m app.main
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

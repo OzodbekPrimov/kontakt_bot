@@ -1,70 +1,172 @@
 # Kontakt Bot
 
-Simple aiogram 3 bot: it accepts a phone number or Telegram contact and creates a **phone deep link** such as `https://t.me/+998901234567?profile`.
+Python 3.12+ va aiogram 3 asosidagi Telegram bot. Pastki menyular, raqam kartasi,
+Telegram ID ko‘rish, foydalanish statistikasi va admin bilan ikki tomonlama aloqa.
+Bitta polling jarayoni va bitta SQLite fayli bilan ishlaydi. Redis, tashqi worker,
+cron, domen yoki Nginx talab qilinmaydi. Foydalanish soniga kvota yo‘q.
 
-The bot does **not** look up, infer, store, or return someone else's username. Telegram resolves the link inside the clicking user's client, subject to Telegram privacy controls.
+## Foydalanuvchi menyusi
 
-## What it does
-
-1. A user sends a valid number, for example `+998901234567`, or shares a contact.
-2. The bot validates and normalizes it to E.164.
-3. The bot returns an inline **Telegram’da profilni ochish** button.
-4. Telegram tries to open the matching profile/chat for the person who pressed the button.
-
-The bot cannot determine whether the number has an account, cannot learn the result of client-side resolution, and cannot return a target username.
-
-`/myprofile` is different: it returns the requesting user's own public username if they have one.
-
-There are no application request quotas. Each submitted number or contact produces one button. Telegram's own API limits and profile privacy settings still apply.
-
-Local numbers use Uzbekistan (`UZ`) by default. For other countries, send the full international number with its country code.
-
-The application runs as a single polling process. No Redis, database, worker, scheduled task, or additional service is required. The domain handles phone validation and URL construction, the application service coordinates them, and Telegram handlers render the result.
-
-## Local launch
-
-```powershell
-Copy-Item .env.example .env
-# Set BOT_TOKEN in .env
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e .
-python -m app.main
+```text
+[ 📱 Raqam ma’lumoti ] [ 🆔 Mening ID’im       ]
+[ 👤 Boshqa user ID  ] [ 📊 Mening statistikam ]
+[ ✉️ Adminga yozish  ] [ ℹ️ Yordam             ]
 ```
 
-The only required setting in `.env` is `BOT_TOKEN`:
+Asosiy menyu `ReplyKeyboardMarkup` bo‘lib, xabar yozish maydoni pastida turadi.
+Profil havolalari, ro‘yxat sahifalari va tasdiqlash amallari xabar tagidagi inline tugmalardir.
+`Bosh menyu`, `Orqaga` va `/cancel` tugallanmagan yozishmani/draftni bekor qiladi.
+
+- **Raqam ma’lumoti**: raqam yoki kontakt yuboriladi. Davlat kodi, hudud, raqam turi,
+  dastlabki operator, ehtimoliy vaqt zonalari va `t.me/+<raqam>?profile` havolasi chiqadi.
+- **Mening ID’im**: aynan botga yozayotgan odamning ID, profil nomi va mavjud username’i.
+- **Boshqa user ID**: Telegram’ning rasmiy user tanlash oynasi. Telegram qaytargan ID,
+  nom va mavjud username chiqadi. Tanlangan odam bot foydalanuvchisi sifatida ro‘yxatga qo‘shilmaydi.
+- **Kontakt**: `contact.user_id` mavjud bo‘lsa chiqariladi. Username faqat yuboruvchining
+  o‘z kontakti bilan mos kelsa, uning `User` ma’lumotidan olinadi.
+- **Mening statistikam**: kontaktlar, matnli raqamlar, user tanlash va natijalar soni.
+- **Adminga yozish**: matn yoki bitta rasm, murojaat raqami va admin javobi shu botda.
+
+Telefonning o‘zi orqali boshqa odamning Telegram ID/username’i aniqlanmaydi.
+Format tekshiruvi SIM faol yoki akkaunt Telegram’da borligini anglatmaydi.
+Operator metadata’si dastlabki operatorni ko‘rsatishi mumkin; vaqt zonasi joriy joylashuv emas.
+ID borligi bot o‘sha odamga xabar yubora olishini kafolatlamaydi.
+Username bo‘lmagan profil havolasi ochilishi Telegram ruxsatlariga bog‘liq.
+
+Mahalliy raqamlar uchun standart davlat UZ. Boshqa davlat raqamini to‘liq `+<davlat kodi>` bilan yuboring.
+
+## Sozlamalar va lokal ishga tushirish
+
+`.env.example` namuna, haqiqiy sozlamalar `.env` ichida. Mavjud tokenni almashtirib yubormang.
 
 ```dotenv
 BOT_TOKEN=your-botfather-token
+ADMIN_IDS=[]
 ```
 
-Alternatively, run the bot with Docker:
+Adminni sozlash:
+
+1. Botni `ADMIN_IDS=[]` bilan yoqing va unga `/start` yuboring.
+2. **Mening ID’im** orqali o‘z ID’ingizni oling.
+3. `.env`ga `ADMIN_IDS=[123456789]` yozing; misoldagi sonni o‘z ID’ingizga almashtiring.
+4. Botni qayta yoqing va `/start` bosing. **Admin panel** tugmasi chiqadi.
+
+Bir nechta admin: `ADMIN_IDS=[123456789,987654321]`. Har bir admin botga o‘zi `/start`
+yuborgan bo‘lishi kerak, aks holda Telegram unga yangi murojaat bildirishnomasini yubormasligi mumkin.
+Admin huquqi username yoki tanlangan userga emas, amaldagi jo‘natuvchining Telegram ID’siga qarab tekshiriladi.
+
+Windows / PowerShell:
 
 ```powershell
-Copy-Item .env.example .env
-# Set BOT_TOKEN in .env
-docker compose up --build -d
+# Faqat yangi virtual muhit kerak bo‘lsa:
+py -3.12 -m venv .venv
+
+# .env hali bo‘lmasa namuna nusxasini yarating:
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -u -m app.main
 ```
 
-## Commands
+`/start`, `/help`, `/privacy`, `/myid`, `/myprofile`, `/stats`, `/admin`, `/cancel` mavjud.
+Oddiy raqam yoki kontaktni menyuni ochmasdan ham yuborish mumkin.
+Bot shaxsiy chatlar uchun ishlaydi.
 
-- `/start` — purpose and instructions
-- `/help` — usage
-- `/privacy` — data-handling statement
-- `/myprofile` — the current user's own public profile link
+## Admin panel
 
-## Privacy and operational rules
+- **Umumiy statistika**: jami user, bugungi yangi/faol, oxirgi 7/30 kunda faol,
+  bloklangani ma’lum userlar va foydalanish hodisalari.
+- **Foydalanuvchilar**: sahifalangan ro‘yxat, aniq ID yoki @username bo‘yicha qidirish,
+  profil havolasi, birinchi/oxirgi faollik, har bir userning kontakt/raqam statistikasi.
+- **Murojaatlar**: yangi, javob berilgan, yopilgan murojaatlar; kartochkada oxirgi 5 xabar.
+  Javob oldindan ko‘riladi va tasdiqlangach aynan murojaat egasiga yuboriladi.
+- **Xabar yuborish**: bitta bot foydalanuvchisiga yoki barcha mavjud foydalanuvchilarga matn/rasm.
+  Oldindan ko‘rish va bir martalik tasdiqlash majburiy. Ommaviy xabar qabul qiluvchilari preview
+  paytida belgilanadi; keyin qo‘shilgan userlar bu xabarga avtomatik qo‘shilmaydi.
+- **Yuborishlar**: oxirgi 10 kampaniya, holatlar, yangilash, to‘xtatish, qolganlarga davom ettirish.
 
-- The bot stores no phone numbers, contacts, or request history and logs no phone numbers.
-- Phone numbers appear in the generated Telegram links and remain in Telegram chat history. Users can delete these messages themselves.
-- There are no request counters, cooldowns, or daily quotas in the application.
-- Keep the token in `.env`, which is ignored by Git. No user-account session, `api_id`, or `api_hash` is needed.
-- Polling needs only outgoing internet access. No inbound port, domain, or webhook setup is required.
+“Faol” — davr ichida bot bilan amal bajargan odam; Telegram online holati emas.
+“Bugun” Toshkent vaqti bilan yarim tundan boshlanadi. Jami user hisobiga adminlar ham kiradi.
+Kontakt kartochkalari, matndagi raqamlar va user tanlash alohida sanaladi. Takror yetkazilgan
+xabarlar hisobni ikki marta oshirmaydi. Avvalgi bazasiz MVP statistikasi ortga tiklanmaydi.
 
-## Verification
+## Xabar yetkazish va restart
+
+Kunlik yoki jami foydalanish kvotasi yo‘q. Telegram `429` javobida ko‘rsatilgan `retry_after`
+muddati kutiladi; retry soni texnik jihatdan cheklangan. Ommaviy yuborish bitta bot jarayonida,
+faqat admin tasdiqlaganda ishlaydigan async vazifadir; alohida worker kerak emas.
+Bir vaqtning o‘zida bitta ommaviy yuborish ishlaydi; qolgan saqlanganlarini paneldan boshlash mumkin.
+
+Botni bloklagan user kampaniyani to‘xtatmaydi. Natijalar `sent`, `blocked`, `failed`, `unknown`
+ko‘rinishida saqlanadi. Network timeout bo‘lsa xabar allaqachon yetgan bo‘lishi mumkin:
+`unknown` natija avtomatik takrorlanmaydi. Exactly-once delivery kafolatlanmaydi.
+
+Servis uzilganda yuborish holati saqlanadi; admin **Yuborishlar** orqali faqat `pending`
+qabul qiluvchilarga davom ettiradi. Hali yuborilayotgan xabar `unknown` bo‘ladi.
+Tasdiqlanmagan draftlar va menyu holatlari xotirada: restartdan keyin ularni qayta boshlash kerak.
+
+## Saqlanadigan ma’lumotlar
+
+`data/bot.sqlite3` avtomatik yaratiladi. Unda:
+
+- Faqat bot bilan o‘zi muloqot qilgan userlarning ID, nom, username va faolligi.
+- So‘rov turi, natijasi va takror sanashdan saqlovchi message ID; tekshirilgan telefonning o‘zi yo‘q.
+- Adminga ataylab yuborilgan murojaat matni, Telegram rasm file_id’si va admin javoblari.
+- Admin yuborishlari, yetkazish holatlari va asosiy admin amallari auditi.
+
+Tanlangan uchinchi shaxslar uchun kontaktlar katalogi yoki telefon–profil indeksi tuzilmaydi.
+Qidiruvlar, tokenlar va murojaat matnlari ilova logiga yozilmaydi.
+Telefon havolalari Telegram chat tarixida qoladi.
+`.env`, `data/`, WAL fayllar va backup Git/Docker build kontekstiga kirmaydi.
+
+Qo‘lda, ishlayotgan bazadan izchil backup olish:
+
+```bash
+.venv/bin/python -m app.backup
+```
+
+Windows: `.\.venv\Scripts\python.exe -m app.backup`.
+Natija `data/backups/` ichida yaratiladi. Bu cron yoki doimiy background task emas.
+WAL yoqilgan ishlayotgan bazaning faqat bitta faylini oddiy nusxalash o‘rniga shu buyruqdan foydalaning.
+
+## Server: bitta systemd service
+
+Python 3.12+ o‘rnatilgan bo‘lishi kerak. Namuna aynan `/home/newuser/contact_bot` va
+`newuser` uchun; boshqa joy bo‘lsa `deploy/kontakt-bot.service` ichidagi yo‘llarni moslang.
+
+```bash
+cd /home/newuser/contact_bot
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -e .
+# .env ichida BOT_TOKEN va ADMIN_IDS ni sozlang.
+chmod 600 .env
+
+sudo cp deploy/kontakt-bot.service /etc/systemd/system/kontakt-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now kontakt-bot
+sudo journalctl -u kontakt-bot -n 50 -f
+```
+
+Kod yoki `.env` yangilangach `sudo systemctl restart kontakt-bot` bajaring.
+`data/`ni saqlang: unda statistika va murojaatlar bor. Bitta token bilan lokal va serverdagi
+pollingni bir vaqtda yoqmang. `Ctrl+C` bilan logdan chiqish service’ni to‘xtatmaydi.
+
+Docker varianti ham mavjud: `docker compose up --build -d`. SQLite uchun `bot_data` nomli
+doimiy volume biriktirilgan. Docker va systemd variantlaridan bittasini ishlating.
+
+## Tuzilma va testlar
+
+`domain` — qiymatlar va modellar; `application` — servislar va storage/transport kontraktlari;
+`infrastructure` — SQLite va Telegram transporti; `presentation` — routerlar, keyboard, FSM va matnlar.
+Router tartibi: navigation → admin → support → lookup. Shu sababli menyu matni adminga xabar sifatida ketmaydi.
 
 ```powershell
-python -m pip install -e ".[dev]"
-python -m pytest
-python -m ruff check .
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff format --check app tests
 ```
+
+Testlar soxta Telegram transporti bilan ishlaydi; haqiqiy token, `.env`, Telegram API yoki
+production bazasi ishlatilmaydi. Ruxsatlar, noto‘g‘ri ID bog‘lash, FSM, tasdiqlash, statistika
+deduplikatsiyasi, murojaatlar, 429, timeout, backup va restartdan davom etish tekshiriladi.
