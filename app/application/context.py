@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from app.application.lookup_worker import LookupWorker
 from app.application.messaging_service import MessagingService
 from app.application.ports import MessageGateway, Storage
 from app.application.services import PhoneLookupService
@@ -14,6 +15,7 @@ class AppContext:
     messaging: MessagingService
     gateway: MessageGateway
     admin_ids: set[int]
+    lookup_worker: LookupWorker | None = None
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids

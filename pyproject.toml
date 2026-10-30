@@ -8,7 +8,9 @@ dependencies = [
     "aiosqlite>=0.21,<1.0",
     "aiogram>=3.22,<4.0",
     "phonenumbers>=9.0,<10.0",
+    "pydantic>=2.10,<2.14",
     "pydantic-settings>=2.10,<3.0",
+    "telethon>=1.45,<2.0",
 ]
 
 [build-system]

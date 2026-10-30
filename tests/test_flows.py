@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -179,6 +180,22 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Mobil", text)
         self.assertIn("Dastlabki operator", text)
         self.assertEqual((await self.db.user_stats(1)).phone_requests, 1)
+
+    async def test_server_lookup_queues_without_claiming_a_found_profile(self):
+        self.context.lookup_worker = SimpleNamespace(free_limit=5)
+        await self.feed(1, "+998901234567")
+        self.assertIn("navbatga olindi", self.messages(1)[-1].text)
+        self.assertNotIn("Telegram profili aniqlandi", self.messages(1)[-1].text)
+        rows = await self.db._rows("SELECT status FROM lookup_requests")
+        self.assertEqual(rows, [{"status": "pending"}])
+        self.assertEqual((await self.db.lookup_balance(1))[:2], (5, 4))
+
+    async def test_lookup_status_is_admin_only(self):
+        self.context.lookup_worker = SimpleNamespace(free_limit=5)
+        await self.feed(1, "/lookup_status")
+        self.assertIn("faqat admin", self.messages(1)[-1].text)
+        await self.feed(99, "/lookup_status")
+        self.assertIn("Qidiruv holati", self.messages(99)[-1].text)
 
     async def test_foreign_contact_id_is_used_without_inventing_a_username(self):
         await self.feed(

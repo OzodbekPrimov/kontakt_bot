@@ -1,0 +1,8 @@
+# Runtime dependencies, pinned to the versions tested with this MVP.
+# Python 3.12 or newer is required.
+aiogram==3.31.0
+aiosqlite==0.22.1
+phonenumbers==9.0.41
+pydantic==2.13.5
+pydantic-settings==2.16.0
+telethon==1.45.0

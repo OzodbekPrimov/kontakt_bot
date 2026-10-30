@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.application.context import AppContext
 from app.domain.exceptions import InvalidPhoneNumber
+from app.domain.phone_number import PhoneNumber
 
 
 def create_router() -> Router:
@@ -20,6 +21,29 @@ async def lookup(message: Message, context: AppContext) -> None:
     contact = message.contact
     raw_phone = contact.phone_number if contact else message.text or ""
     kind = "contact" if contact else "phone"
+    if context.lookup_worker is not None:
+        try:
+            phone = PhoneNumber.parse(raw_phone)
+        except InvalidPhoneNumber:
+            await message.answer("Raqam formati noto‘g‘ri. Masalan: <code>+998901234567</code>")
+            return
+        request_id, outcome = await context.storage.enqueue_lookup(
+            message.from_user.id,
+            message.chat.id,
+            message.message_id,
+            phone.e164,
+            phone.masked,
+            context.lookup_worker.free_limit,
+        )
+        if outcome == "queued":
+            await message.answer(f"So‘rov #{request_id} navbatga olindi. Natija shu chatga keladi.")
+        elif outcome == "duplicate":
+            await message.answer(f"So‘rov #{request_id} avval qabul qilingan.")
+        elif outcome == "exhausted":
+            await message.answer("Kontakt limiti tugagan. Admin bilan bog‘laning.")
+        else:
+            await message.answer("Faol kontakt tarifi yo‘q. Admin bilan bog‘laning.")
+        return
     try:
         result = context.lookup.create_link(raw_phone)
     except InvalidPhoneNumber:

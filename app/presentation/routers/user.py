@@ -11,14 +11,24 @@ from app.presentation import keyboards as kb
 from app.presentation.content import sender_profile
 from app.presentation.formatters import usage_card, user_card
 from app.presentation.states import UserFlow
-from app.presentation.texts import PRIVACY, START
+from app.presentation.texts import PRIVACY, SERVER_PRIVACY, SERVER_START, START
 
 
 def create_router() -> Router:
     router = Router(name="navigation")
     router.message.register(
         navigation,
-        Command("start", "help", "privacy", "myprofile", "myid", "stats", "admin", "cancel"),
+        Command(
+            "start",
+            "help",
+            "privacy",
+            "myprofile",
+            "myid",
+            "stats",
+            "admin",
+            "cancel",
+            "lookup_balance",
+        ),
     )
     router.message.register(navigation, F.text.in_(kb.NAVIGATION))
     router.message.register(shared_user, F.users_shared)
@@ -33,6 +43,25 @@ async def navigation(message: Message, state: FSMContext, context: AppContext) -
     action = text.split()[0].split("@")[0].lower() if text.startswith("/") else text
     is_admin = context.is_admin(message.from_user.id)
     menu = kb.main_menu(is_admin)
+    if action == "/lookup_balance":
+        if context.lookup_worker is None:
+            await message.answer("Server qidiruvi hozir yoqilmagan.")
+            return
+        balance = await context.storage.lookup_balance(message.from_user.id)
+        if balance is None:
+            if context.lookup_worker.free_limit:
+                await message.answer("Faol tarif yo‘q. Birinchi qidiruvda bepul tarif ochiladi.")
+            else:
+                await message.answer("Faol tarif yo‘q. Admin bilan bog‘laning.")
+        else:
+            from app.domain.models import local_date
+
+            capacity, available, expires_at = balance
+            await message.answer(
+                f"Kontaktlar: {available}/{capacity} mavjud. "
+                f"Tarif muddati: {local_date(expires_at)}."
+            )
+        return
     if (
         action == kb.BACK
         and is_admin
@@ -103,24 +132,34 @@ async def navigation(message: Message, state: FSMContext, context: AppContext) -
             reply_markup=kb.back_menu(),
         )
     elif action in {kb.HELP, "/help"}:
+        lookup_help = (
+            "📱 Raqam/kontakt → Telegram’da tekshiruv va natija. /lookup_balance → qoldiq.\n"
+            if context.lookup_worker is not None
+            else "📱 Raqam/kontakt → texnik ma’lumot va Telegram havolasi.\n"
+        )
         await message.answer(
-            "📱 Raqam/kontakt → texnik ma’lumot va Telegram havolasi.\n"
-            "🆔 Mening ID’im → o‘z profil ma’lumotlaringiz.\n"
+            lookup_help + "🆔 Mening ID’im → o‘z profil ma’lumotlaringiz.\n"
             "👤 Boshqa user ID → Telegram oynasidan user tanlash.\n"
             "✉️ Adminga yozish → murojaat va javoblar.\n\n"
-            "Raqamdan username/ID aniqlanmaydi. Profil ochilishi Telegram ruxsatlariga bog‘liq.\n"
+            "Profil ochilishi Telegram ruxsatlariga bog‘liq.\n"
             "/privacy — saqlanadigan ma’lumotlar. /cancel — amalni bekor qilish.",
             reply_markup=menu,
         )
     elif action == "/privacy":
-        await message.answer(PRIVACY, reply_markup=menu)
+        await message.answer(
+            SERVER_PRIVACY if context.lookup_worker is not None else PRIVACY,
+            reply_markup=menu,
+        )
     elif action == kb.OTHER_ID:
         await message.answer(
             "Pastdagi «Boshqa user ID» tugmasidan user tanlang.", reply_markup=menu
         )
     else:
         await message.answer(
-            START if action == "/start" else "Bosh menyu. Amalni tanlang.", reply_markup=menu
+            (SERVER_START if context.lookup_worker is not None else START)
+            if action == "/start"
+            else "Bosh menyu. Amalni tanlang.",
+            reply_markup=menu,
         )
 
 

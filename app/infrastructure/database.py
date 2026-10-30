@@ -90,6 +90,47 @@ PRAGMA user_version = 1;
 COMMIT;
 """
 
+LOOKUP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS lookup_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(telegram_id),
+    capacity INTEGER NOT NULL CHECK(capacity > 0),
+    starts_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_by INTEGER,
+    CHECK(expires_at > starts_at)
+);
+CREATE INDEX IF NOT EXISTS lookup_plans_user ON lookup_plans(user_id, expires_at);
+CREATE TABLE IF NOT EXISTS lookup_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id INTEGER NOT NULL REFERENCES lookup_plans(id),
+    user_id INTEGER NOT NULL REFERENCES users(telegram_id),
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    phone TEXT,
+    masked_phone TEXT NOT NULL,
+    status TEXT NOT NULL,
+    due_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    found INTEGER NOT NULL DEFAULT 0,
+    result_text TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(chat_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS lookup_requests_work ON lookup_requests(status, due_at, id);
+CREATE TABLE IF NOT EXISTS lookup_quota_events (
+    request_id INTEGER PRIMARY KEY REFERENCES lookup_requests(id),
+    plan_id INTEGER NOT NULL REFERENCES lookup_plans(id),
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lookup_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    next_allowed_at INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO lookup_state(id, next_allowed_at) VALUES (1, 0);
+"""
+
 
 class Database:
     """One SQLite connection, short serialized transactions, no Telegram calls inside them."""
@@ -111,8 +152,19 @@ class Database:
                 version = (await cursor.fetchone())[0]
             if version == 0:
                 await connection.executescript(SCHEMA)
-            elif version != 1:
+            elif version not in (1, 2):
                 raise RuntimeError("Unsupported database version; update the application")
+            if version < 2:
+                await connection.executescript(LOOKUP_SCHEMA)
+                await connection.execute("PRAGMA user_version = 2")
+            # A lookup can be retried. A delivery may already have reached the user.
+            await connection.execute(
+                "UPDATE lookup_requests SET status='pending' WHERE status='resolving'"
+            )
+            await connection.execute(
+                "UPDATE lookup_requests SET status='unknown',phone=NULL,result_text=NULL "
+                "WHERE status='delivering'"
+            )
             # A send may have reached Telegram before the process stopped. Never blindly resend it.
             await connection.execute(
                 "UPDATE deliveries SET status = 'unknown' WHERE status = 'sending'"
@@ -185,6 +237,237 @@ class Database:
             "INSERT OR IGNORE INTO usage_events VALUES (?, ?, ?, ?, ?, ?)",
             (user_id, chat_id, message_id, kind, success, timestamp()),
         )
+
+    async def grant_lookup_plan(self, user_id: int, capacity: int, days: int, admin_id: int) -> int:
+        if capacity < 1 or days < 1:
+            raise ValueError("Capacity and days must be positive")
+        now = timestamp()
+        async with self._lock:
+            await self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                async with self._connection.execute(
+                    "SELECT 1 FROM users WHERE telegram_id=?", (user_id,)
+                ) as cursor:
+                    if await cursor.fetchone() is None:
+                        raise ValueError("The user must start the bot first")
+                async with self._connection.execute(
+                    "SELECT 1 FROM lookup_plans WHERE user_id=? AND expires_at>? "
+                    "AND created_by IS NOT NULL LIMIT 1",
+                    (user_id, now),
+                ) as cursor:
+                    if await cursor.fetchone() is not None:
+                        raise ValueError("An active lookup plan already exists")
+                cursor = await self._connection.execute(
+                    "INSERT INTO lookup_plans(user_id,capacity,starts_at,expires_at,created_by) "
+                    "VALUES (?,?,?,?,?)",
+                    (user_id, capacity, now, now + days * 86400, admin_id),
+                )
+                await self._audit(admin_id, "grant_lookup_plan", cursor.lastrowid)
+                await self._connection.commit()
+                return cursor.lastrowid
+            except BaseException:
+                await self._connection.rollback()
+                raise
+
+    async def lookup_balance(self, user_id: int) -> tuple[int, int, int] | None:
+        now = timestamp()
+        rows = await self._rows(
+            "SELECT id,capacity,expires_at FROM lookup_plans WHERE user_id=? "
+            "AND starts_at<=? AND expires_at>? ORDER BY id DESC LIMIT 1",
+            (user_id, now, now),
+        )
+        if not rows:
+            return None
+        plan = rows[0]
+        counts = await self._rows(
+            "SELECT (SELECT count(*) FROM lookup_quota_events WHERE plan_id=?) + "
+            "(SELECT count(*) FROM lookup_requests WHERE plan_id=? AND status IN "
+            "('pending','resolving','delivery_pending','delivering')) AS used",
+            (plan["id"], plan["id"]),
+        )
+        return plan["capacity"], max(0, plan["capacity"] - counts[0]["used"]), plan["expires_at"]
+
+    async def lookup_status(self) -> dict[str, int]:
+        rows = await self._rows(
+            "SELECT status,found,count(*) AS n FROM lookup_requests GROUP BY status,found"
+        )
+        result = {f"{row['status']}:{row['found']}": row["n"] for row in rows}
+        state = await self._rows("SELECT next_allowed_at FROM lookup_state WHERE id=1")
+        result["next_allowed_at"] = state[0]["next_allowed_at"]
+        return result
+
+    async def enqueue_lookup(
+        self,
+        user_id: int,
+        chat_id: int,
+        message_id: int,
+        phone: str,
+        masked_phone: str,
+        free_limit: int,
+    ) -> tuple[int | None, str]:
+        now = timestamp()
+        async with self._lock:
+            await self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                async with self._connection.execute(
+                    "SELECT id FROM lookup_requests WHERE chat_id=? AND message_id=?",
+                    (chat_id, message_id),
+                ) as cursor:
+                    duplicate = await cursor.fetchone()
+                if duplicate:
+                    await self._connection.commit()
+                    return duplicate[0], "duplicate"
+                async with self._connection.execute(
+                    "SELECT id,capacity FROM lookup_plans WHERE user_id=? "
+                    "AND starts_at<=? AND expires_at>? ORDER BY id DESC LIMIT 1",
+                    (user_id, now, now),
+                ) as cursor:
+                    plan = await cursor.fetchone()
+                if plan is None:
+                    async with self._connection.execute(
+                        "SELECT 1 FROM lookup_plans WHERE user_id=? LIMIT 1", (user_id,)
+                    ) as cursor:
+                        had_plan = await cursor.fetchone() is not None
+                    if not had_plan and free_limit > 0:
+                        cursor = await self._connection.execute(
+                            "INSERT INTO lookup_plans(user_id,capacity,starts_at,expires_at) "
+                            "VALUES (?,?,?,?)",
+                            (user_id, free_limit, now, now + 30 * 86400),
+                        )
+                        plan_id, capacity = cursor.lastrowid, free_limit
+                    else:
+                        await self._connection.commit()
+                        return None, "no_plan"
+                else:
+                    plan_id, capacity = plan
+                async with self._connection.execute(
+                    "SELECT (SELECT count(*) FROM lookup_quota_events WHERE plan_id=?) + "
+                    "(SELECT count(*) FROM lookup_requests WHERE plan_id=? AND status IN "
+                    "('pending','resolving','delivery_pending','delivering'))",
+                    (plan_id, plan_id),
+                ) as cursor:
+                    used = (await cursor.fetchone())[0]
+                if used >= capacity:
+                    await self._connection.commit()
+                    return None, "exhausted"
+                cursor = await self._connection.execute(
+                    "INSERT INTO lookup_requests(plan_id,user_id,chat_id,message_id,phone,"
+                    "masked_phone,status,due_at,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,'pending',?,?,?)",
+                    (plan_id, user_id, chat_id, message_id, phone, masked_phone, now, now, now),
+                )
+                await self._connection.commit()
+                return cursor.lastrowid, "queued"
+            except BaseException:
+                await self._connection.rollback()
+                raise
+
+    async def claim_lookup(self) -> dict | None:
+        now = timestamp()
+        async with self._lock:
+            await self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                async with self._connection.execute(
+                    "SELECT next_allowed_at FROM lookup_state WHERE id=1"
+                ) as cursor:
+                    next_allowed = (await cursor.fetchone())[0]
+                if next_allowed > now:
+                    await self._connection.commit()
+                    return None
+                async with self._connection.execute(
+                    "SELECT * FROM lookup_requests WHERE status='pending' AND due_at<=? "
+                    "ORDER BY due_at,id LIMIT 1",
+                    (now,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None:
+                    await self._connection.commit()
+                    return None
+                await self._connection.execute(
+                    "UPDATE lookup_requests SET status='resolving',"
+                    "attempts=attempts+1,updated_at=? "
+                    "WHERE id=?",
+                    (now, row["id"]),
+                )
+                await self._connection.execute(
+                    "UPDATE lookup_state SET next_allowed_at=? WHERE id=1", (now + 4,)
+                )
+                await self._connection.commit()
+                return dict(row)
+            except BaseException:
+                await self._connection.rollback()
+                raise
+
+    async def defer_lookup(self, request_id: int, seconds: int) -> None:
+        now = timestamp()
+        async with self._lock:
+            await self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                due = now + max(1, seconds) + 1
+                await self._connection.execute(
+                    "UPDATE lookup_requests SET status='pending',due_at=?,updated_at=? "
+                    "WHERE id=? AND status='resolving'",
+                    (due, now, request_id),
+                )
+                await self._connection.execute(
+                    "UPDATE lookup_state SET next_allowed_at=max(next_allowed_at,?) WHERE id=1",
+                    (due,),
+                )
+                await self._connection.commit()
+            except BaseException:
+                await self._connection.rollback()
+                raise
+
+    async def complete_lookup_resolution(self, request_id: int, found: bool, text: str) -> None:
+        await self._write(
+            "UPDATE lookup_requests SET status='delivery_pending',found=?,result_text=?,"
+            "updated_at=? WHERE id=? AND status='resolving'",
+            (int(found), text, timestamp(), request_id),
+        )
+
+    async def claim_lookup_delivery(self) -> dict | None:
+        async with self._lock:
+            async with self._connection.execute(
+                "SELECT * FROM lookup_requests WHERE status='delivery_pending' ORDER BY id LIMIT 1"
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return None
+            await self._connection.execute(
+                "UPDATE lookup_requests SET status='delivering',updated_at=? "
+                "WHERE id=? AND status='delivery_pending'",
+                (timestamp(), row["id"]),
+            )
+            return dict(row)
+
+    async def finish_lookup_delivery(self, request_id: int, delivery_status: str) -> None:
+        now = timestamp()
+        async with self._lock:
+            await self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                async with self._connection.execute(
+                    "SELECT plan_id,found,status FROM lookup_requests WHERE id=?", (request_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None or row["status"] != "delivering":
+                    await self._connection.commit()
+                    return
+                if delivery_status == "sent" and row["found"]:
+                    await self._connection.execute(
+                        "INSERT OR IGNORE INTO lookup_quota_events(request_id,plan_id,created_at) "
+                        "VALUES (?,?,?)",
+                        (request_id, row["plan_id"], now),
+                    )
+                final = "sent" if delivery_status == "sent" else delivery_status
+                await self._connection.execute(
+                    "UPDATE lookup_requests SET status=?,phone=NULL,result_text=NULL,updated_at=? "
+                    "WHERE id=?",
+                    (final, now, request_id),
+                )
+                await self._connection.commit()
+            except BaseException:
+                await self._connection.rollback()
+                raise
 
     async def user_stats(self, user_id: int) -> UsageStats:
         return await self._usage(user_id)

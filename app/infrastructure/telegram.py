@@ -32,6 +32,17 @@ class TelegramGateway:
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
 
+    async def send_lookup(self, user_id: int, html: str) -> DeliveryStatus:
+        try:
+            await self.bot.send_message(user_id, html, parse_mode="HTML")
+        except TelegramForbiddenError:
+            return DeliveryStatus.BLOCKED
+        except TelegramNetworkError:
+            return DeliveryStatus.UNKNOWN
+        except TelegramAPIError:
+            return DeliveryStatus.FAILED
+        return DeliveryStatus.SENT
+
     async def send(self, user_id: int, payload: Payload) -> DeliveryStatus:
         sent_part = False
         try:

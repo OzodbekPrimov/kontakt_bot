@@ -43,3 +43,9 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(bot.send_photo.await_args.kwargs["caption"], text[:1024])
         self.assertEqual(bot.send_message.await_args.args[1], text[1024:])
+
+    async def test_lookup_result_is_sent_as_html(self):
+        bot = AsyncMock(spec=Bot)
+        gateway = TelegramGateway(bot)
+        self.assertEqual(await gateway.send_lookup(1, "<b>Found</b>"), DeliveryStatus.SENT)
+        self.assertEqual(bot.send_message.await_args.kwargs["parse_mode"], "HTML")

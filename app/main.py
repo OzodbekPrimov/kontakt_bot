@@ -11,6 +11,7 @@ from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import ErrorEvent
 
 from app.application.context import AppContext
+from app.application.lookup_worker import LookupWorker
 from app.application.messaging_service import MessagingService
 from app.application.services import PhoneLookupService
 from app.application.support_service import SupportService
@@ -18,6 +19,7 @@ from app.config import Settings
 from app.domain.models import Payload
 from app.infrastructure.database import Database
 from app.infrastructure.telegram import RetryAfterMiddleware, TelegramGateway
+from app.infrastructure.user_lookup import UserLookupClient
 from app.presentation.middlewares import ActivityMiddleware
 from app.presentation.routes import create_router
 
@@ -50,6 +52,8 @@ async def main() -> None:
     database = await Database.open(Path("data/bot.sqlite3"))
     bot = None
     messaging = None
+    lookup_worker = None
+    lookup_client = None
     try:
         bot = Bot(
             token=settings.bot_token.get_secret_value(),
@@ -59,6 +63,22 @@ async def main() -> None:
         admins = set(settings.admin_ids)
         gateway = TelegramGateway(bot)
         messaging = MessagingService(database, gateway, admins)
+        if settings.lookup_enabled:
+            session = (
+                settings.lookup_session.get_secret_value()
+                if settings.lookup_session
+                else settings.lookup_session_file.read_text(encoding="utf-8").strip()
+            )
+            lookup_client = UserLookupClient(
+                settings.lookup_api_id,
+                settings.lookup_api_hash.get_secret_value(),
+                session,
+            )
+            await lookup_client.connect()
+            lookup_worker = LookupWorker(
+                database, gateway, lookup_client, settings.lookup_free_limit
+            )
+            lookup_worker.start()
         context = AppContext(
             database,
             PhoneLookupService(),
@@ -66,6 +86,7 @@ async def main() -> None:
             messaging,
             gateway,
             admins,
+            lookup_worker,
         )
         dispatcher = Dispatcher(context=context, events_isolation=SimpleEventIsolation())
         activity = ActivityMiddleware(database)
@@ -81,6 +102,10 @@ async def main() -> None:
             close_bot_session=False,
         )
     finally:
+        if lookup_worker:
+            await lookup_worker.close()
+        if lookup_client:
+            await lookup_client.close()
         if messaging:
             await messaging.close()
         if bot:

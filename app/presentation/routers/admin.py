@@ -3,12 +3,12 @@ from __future__ import annotations
 import secrets
 
 from aiogram import F, Router
-from aiogram.filters import StateFilter
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.application.context import AppContext
-from app.domain.models import DeliveryStatus, Payload, local_date
+from app.domain.models import DeliveryStatus, Payload, local_date, timestamp
 from app.presentation import keyboards as kb
 from app.presentation.content import payload_from
 from app.presentation.formatters import registered_card, usage_card
@@ -29,6 +29,8 @@ STATUS_NAMES = {
 
 def create_router() -> Router:
     router = Router(name="admin")
+    router.message.register(grant_lookup_plan, Command("lookup_plan"), StateFilter(None))
+    router.message.register(lookup_status, Command("lookup_status"), StateFilter(None))
     router.callback_query.register(admin_callback, F.data.startswith("a:"))
     router.message.register(
         admin_content,
@@ -41,6 +43,60 @@ def create_router() -> Router:
         ),
     )
     return router
+
+
+async def lookup_status(message: Message, context: AppContext) -> None:
+    if not context.is_admin(message.from_user.id):
+        await message.answer("Bu amal faqat admin uchun.")
+        return
+    if context.lookup_worker is None:
+        await message.answer("Server qidiruvi yoqilmagan.")
+        return
+    stats = await context.storage.lookup_status()
+    pending = stats.get("pending:0", 0) + stats.get("resolving:0", 0)
+    found = stats.get("sent:1", 0)
+    unresolved = stats.get("sent:0", 0)
+    uncertain = stats.get("unknown:0", 0) + stats.get("unknown:1", 0)
+    wait = max(0, stats["next_allowed_at"] - timestamp())
+    await message.answer(
+        f"<b>Qidiruv holati</b>\nNavbatda: {pending}\n"
+        f"Topilib yetkazilgan: {found}\n"
+        f"Aniqlanmagan yoki xato: {unresolved}\n"
+        f"Yetkazish holati noma’lum: {uncertain}\n"
+        f"Keyingi qidiruvgacha: {wait} soniya"
+    )
+
+
+async def grant_lookup_plan(message: Message, context: AppContext) -> None:
+    if not context.is_admin(message.from_user.id):
+        await message.answer("Bu amal faqat admin uchun.")
+        return
+    if context.lookup_worker is None:
+        await message.answer("Server qidiruvi yoqilmagan.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 4 or not all(part.isascii() and part.isdecimal() for part in parts[1:]):
+        await message.answer(
+            "Format: /lookup_plan USER_ID KONTAKT_SONI KUN. Masalan: /lookup_plan 123 300 30"
+        )
+        return
+    user_id, capacity, days = map(int, parts[1:])
+    if user_id < 1 or not 1 <= capacity <= 10000 or not 1 <= days <= 365:
+        await message.answer("ID, kontakt soni yoki kunlar noto‘g‘ri.")
+        return
+    try:
+        plan_id = await context.storage.grant_lookup_plan(
+            user_id, capacity, days, message.from_user.id
+        )
+    except ValueError as exc:
+        if str(exc) == "An active lookup plan already exists":
+            await message.answer(
+                "Bu foydalanuvchida faol pullik tarif bor; muddati tugagach yangisini oching."
+            )
+        else:
+            await message.answer("Foydalanuvchi botga avval /start yuborishi kerak.")
+        return
+    await message.answer(f"Tarif #{plan_id} ochildi: {capacity} ta kontakt, {days} kun.")
 
 
 async def statistics(message: Message, context: AppContext) -> None:
