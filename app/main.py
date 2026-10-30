@@ -76,7 +76,11 @@ async def main() -> None:
             )
             await lookup_client.connect()
             lookup_worker = LookupWorker(
-                database, gateway, lookup_client, settings.lookup_free_limit
+                database,
+                gateway,
+                lookup_client,
+                settings.lookup_free_limit,
+                settings.lookup_open_access,
             )
             lookup_worker.start()
         context = AppContext(

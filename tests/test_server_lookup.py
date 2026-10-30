@@ -90,6 +90,42 @@ class ServerLookupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.enqueue(301))[1], "exhausted")
         self.assertEqual((await self.db.lookup_balance(1))[:2], (300, 0))
 
+    async def test_open_access_ignores_old_plan_and_has_no_app_quota(self):
+        await self.db.grant_lookup_plan(1, 1, 30, 99)
+        for message_id in range(1, 26):
+            result = await self.db.enqueue_lookup(
+                1,
+                1,
+                message_id,
+                "+998901234567",
+                "+99890***4567",
+                5,
+                open_access=True,
+            )
+            self.assertEqual(result[1], "queued")
+        rows = await self.db._rows(
+            "SELECT count(*) AS n FROM lookup_requests WHERE status='pending'"
+        )
+        self.assertEqual(rows[0]["n"], 25)
+        self.assertEqual((await self.db.lookup_balance(1))[:2], (1, 1))
+
+    async def test_open_access_delivery_never_creates_quota_event(self):
+        self.worker.open_access = True
+        await self.db.enqueue_lookup(
+            1,
+            1,
+            1,
+            "+998901234567",
+            "+99890***4567",
+            5,
+            open_access=True,
+        )
+        self.resolver.result = ResolvedAccount(777, "Ali", None, "ali777")
+        await self.worker.process_one()
+        await self.worker.process_one()
+        rows = await self.db._rows("SELECT count(*) AS n FROM lookup_quota_events")
+        self.assertEqual(rows[0]["n"], 0)
+
     async def test_active_plan_cannot_be_overwritten_accidentally(self):
         await self.db.grant_lookup_plan(1, 300, 30, 99)
         with self.assertRaisesRegex(ValueError, "active lookup plan"):

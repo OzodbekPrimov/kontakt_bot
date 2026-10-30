@@ -53,34 +53,31 @@ sessiyani volume ichida yaratish buyrug‘i:
 
 ```dotenv
 LOOKUP_ENABLED=true
+LOOKUP_OPEN_ACCESS=true
 LOOKUP_API_ID=123456
 LOOKUP_API_HASH=your-api-hash
 LOOKUP_SESSION_FILE=data/lookup-session.txt
-LOOKUP_FREE_LIMIT=5
 ```
 
 Muqobil sozlama: `LOOKUP_SESSION=<StringSession>`. Sozlamalar to‘liq bo‘lmasa yoki sessiya oddiy
 user akkauntiga tegishli bo‘lmasa, bot ishga tushmaydi. Sessiya yaratilgach uni faqat bitta
 ishlayotgan jarayonga ulang.
-Pilot uchun `/lookup_balance` qoldiqni ko‘rsatadi. Birinchi qidiruv 30 kunlik 5 ta bepul limitni
-ochadi (`LOOKUP_FREE_LIMIT` orqali o‘zgartiriladi). Admin botga avval `/start` yuborgan userga
-`/lookup_plan USER_ID 300 30` orqali yangi 300 ta / 30 kunlik tarifni qo‘lda ochadi.
-Faol pullik tarif bor foydalanuvchiga ikkinchisi ochilmaydi. Bepul tarifdan pullikka
-o‘tish mumkin; avval navbatga olingan so‘rovlar eski tarif hisobida qoladi.
+Pilot hammaga ochiq: bot foydalanuvchisiga ilova ichidagi qidiruv kvotasi qo‘yilmaydi.
+`/lookup_balance` ham ochiq rejimni ko‘rsatadi. Eski tarif yozuvlari bazada qoladi, ammo ochiq
+rejimdagi yangi qidiruvlarga ta’sir qilmaydi. Pullik tarif berish buyrug‘i botda yoqilmagan.
 Admin `/lookup_status` orqali navbat, yetkazilgan va aniqlanmagan natijalar hamda Telegram
 kutish muddatini ko‘radi. Bu hisoblar telefon raqamlarini ko‘rsatmaydi.
-Bu buyruq to‘lovni tekshirmaydi; faqat admin huquqi bilan ishlaydi. Jamoa/tashkilot tariflari,
-to‘lov integratsiyasi va ko‘p akkauntli qidiruv hali yo‘q.
+Telegram’ning raqam qidirish tezligi va `FLOOD_WAIT` cheklovlari saqlanadi. Ko‘p akkauntli
+qidiruv hali yo‘q.
 
 Raqam xalqaro formatga keltiriladi va navbatga yoziladi. Qidiruv `contacts.resolvePhone` bilan
 kontaktga saqlamasdan bajariladi. Rasmiy 3 soniyalik oraliq va Telegram qaytargan `FLOOD_WAIT`
-muddati saqlanadi. Topilmagan yoki maxfiylik sabab aniqlanmagan raqam uchun limit ayrilmaydi.
-Limit faqat profil topilib, bot natijani muvaffaqiyatli yuborganda ayriladi. Tarmoq timeoutida
-yuborish natijasi noma’lum bo‘lsa avtomatik qayta yuborilmaydi va limit ayrilmaydi.
+muddati saqlanadi. Tarmoq timeoutida yuborish natijasi noma’lum bo‘lsa avtomatik qayta
+yuborilmaydi.
 Telegram foydalanuvchining profil havolasini ocha olganini botga tasdiqlamaydi.
 
-`data/bot.sqlite3`dagi eskirgan `usage_events.success` qidiruv kvotasi sifatida ishlatilmaydi.
-Yangi so‘rovlar, kvota hodisalari va kutish holati alohida saqlanadi. Bazaning versiyasi 2 ga
+`data/bot.sqlite3`dagi eskirgan `usage_events.success` qidiruv natijasi sifatida ishlatilmaydi.
+Yangi so‘rovlar va kutish holati alohida saqlanadi. Bazaning versiyasi 2 ga
 avtomatik o‘tadi; productionda yoqishdan oldin izchil backup oling. Navbatdagi raqamlar ishlov
 tugaguncha bazada ochiq shaklda turadi, yakuniy holatga o‘tgach to‘liq raqam o‘chiriladi.
 Shu sabab baza fayli va backuplarga kirishni cheklang; raqamlar Telegram chat tarixida ham qoladi.
@@ -140,7 +137,7 @@ xabarlar hisobni ikki marta oshirmaydi. Avvalgi bazasiz MVP statistikasi ortga t
 
 ## Xabar yetkazish va restart
 
-Eski havola rejimida foydalanish kvotasi yo‘q. Server qidiruvi rejimida tarif kvotasi bor.
+Ilova ichida foydalanish kvotasi yo‘q; Telegram qidiruv tezligi cheklovlari amal qiladi.
 Telegram `429` javobida ko‘rsatilgan `retry_after`
 muddati kutiladi; retry soni texnik jihatdan cheklangan. Ommaviy yuborish bitta bot jarayonida,
 faqat admin tasdiqlaganda ishlaydigan async vazifadir; alohida worker kerak emas.

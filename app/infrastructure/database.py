@@ -252,7 +252,7 @@ class Database:
                         raise ValueError("The user must start the bot first")
                 async with self._connection.execute(
                     "SELECT 1 FROM lookup_plans WHERE user_id=? AND expires_at>? "
-                    "AND created_by IS NOT NULL LIMIT 1",
+                    "AND created_by>0 LIMIT 1",
                     (user_id, now),
                 ) as cursor:
                     if await cursor.fetchone() is not None:
@@ -273,7 +273,9 @@ class Database:
         now = timestamp()
         rows = await self._rows(
             "SELECT id,capacity,expires_at FROM lookup_plans WHERE user_id=? "
-            "AND starts_at<=? AND expires_at>? ORDER BY id DESC LIMIT 1",
+            "AND starts_at<=? AND expires_at>? "
+            "AND (created_by IS NULL OR created_by!=-1) "
+            "ORDER BY id DESC LIMIT 1",
             (user_id, now, now),
         )
         if not rows:
@@ -304,6 +306,7 @@ class Database:
         phone: str,
         masked_phone: str,
         free_limit: int,
+        open_access: bool = False,
     ) -> tuple[int | None, str]:
         now = timestamp()
         async with self._lock:
@@ -317,39 +320,61 @@ class Database:
                 if duplicate:
                     await self._connection.commit()
                     return duplicate[0], "duplicate"
-                async with self._connection.execute(
-                    "SELECT id,capacity FROM lookup_plans WHERE user_id=? "
-                    "AND starts_at<=? AND expires_at>? ORDER BY id DESC LIMIT 1",
-                    (user_id, now, now),
-                ) as cursor:
-                    plan = await cursor.fetchone()
-                if plan is None:
+                if open_access:
                     async with self._connection.execute(
-                        "SELECT 1 FROM lookup_plans WHERE user_id=? LIMIT 1", (user_id,)
+                        "SELECT id,capacity FROM lookup_plans WHERE user_id=? "
+                        "AND created_by=-1 LIMIT 1",
+                        (user_id,),
                     ) as cursor:
-                        had_plan = await cursor.fetchone() is not None
-                    if not had_plan and free_limit > 0:
+                        plan = await cursor.fetchone()
+                    if plan is None:
                         cursor = await self._connection.execute(
-                            "INSERT INTO lookup_plans(user_id,capacity,starts_at,expires_at) "
-                            "VALUES (?,?,?,?)",
-                            (user_id, free_limit, now, now + 30 * 86400),
+                            "INSERT INTO lookup_plans"
+                            "(user_id,capacity,starts_at,expires_at,created_by) "
+                            "VALUES (?,1,?,253402300799,-1)",
+                            (user_id, now),
                         )
-                        plan_id, capacity = cursor.lastrowid, free_limit
+                        plan_id, capacity = cursor.lastrowid, 1
                     else:
-                        await self._connection.commit()
-                        return None, "no_plan"
+                        plan_id, capacity = plan
                 else:
-                    plan_id, capacity = plan
-                async with self._connection.execute(
-                    "SELECT (SELECT count(*) FROM lookup_quota_events WHERE plan_id=?) + "
-                    "(SELECT count(*) FROM lookup_requests WHERE plan_id=? AND status IN "
-                    "('pending','resolving','delivery_pending','delivering'))",
-                    (plan_id, plan_id),
-                ) as cursor:
-                    used = (await cursor.fetchone())[0]
-                if used >= capacity:
-                    await self._connection.commit()
-                    return None, "exhausted"
+                    async with self._connection.execute(
+                        "SELECT id,capacity FROM lookup_plans WHERE user_id=? "
+                        "AND starts_at<=? AND expires_at>? "
+                        "AND (created_by IS NULL OR created_by!=-1) "
+                        "ORDER BY id DESC LIMIT 1",
+                        (user_id, now, now),
+                    ) as cursor:
+                        plan = await cursor.fetchone()
+                    if plan is None:
+                        async with self._connection.execute(
+                            "SELECT 1 FROM lookup_plans WHERE user_id=? "
+                            "AND created_by IS NULL LIMIT 1",
+                            (user_id,),
+                        ) as cursor:
+                            had_free_plan = await cursor.fetchone() is not None
+                        if not had_free_plan and free_limit > 0:
+                            cursor = await self._connection.execute(
+                                "INSERT INTO lookup_plans(user_id,capacity,starts_at,expires_at) "
+                                "VALUES (?,?,?,?)",
+                                (user_id, free_limit, now, now + 30 * 86400),
+                            )
+                            plan_id, capacity = cursor.lastrowid, free_limit
+                        else:
+                            await self._connection.commit()
+                            return None, "no_plan"
+                    else:
+                        plan_id, capacity = plan
+                    async with self._connection.execute(
+                        "SELECT (SELECT count(*) FROM lookup_quota_events WHERE plan_id=?) + "
+                        "(SELECT count(*) FROM lookup_requests WHERE plan_id=? AND status IN "
+                        "('pending','resolving','delivery_pending','delivering'))",
+                        (plan_id, plan_id),
+                    ) as cursor:
+                        used = (await cursor.fetchone())[0]
+                    if used >= capacity:
+                        await self._connection.commit()
+                        return None, "exhausted"
                 cursor = await self._connection.execute(
                     "INSERT INTO lookup_requests(plan_id,user_id,chat_id,message_id,phone,"
                     "masked_phone,status,due_at,created_at,updated_at) "
@@ -455,8 +480,9 @@ class Database:
                 if delivery_status == "sent" and row["found"]:
                     await self._connection.execute(
                         "INSERT OR IGNORE INTO lookup_quota_events(request_id,plan_id,created_at) "
-                        "VALUES (?,?,?)",
-                        (request_id, row["plan_id"], now),
+                        "SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM lookup_plans "
+                        "WHERE id=? AND created_by=-1)",
+                        (request_id, row["plan_id"], now, row["plan_id"]),
                     )
                 final = "sent" if delivery_status == "sent" else delivery_status
                 await self._connection.execute(

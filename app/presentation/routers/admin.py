@@ -29,7 +29,6 @@ STATUS_NAMES = {
 
 def create_router() -> Router:
     router = Router(name="admin")
-    router.message.register(grant_lookup_plan, Command("lookup_plan"), StateFilter(None))
     router.message.register(lookup_status, Command("lookup_status"), StateFilter(None))
     router.callback_query.register(admin_callback, F.data.startswith("a:"))
     router.message.register(

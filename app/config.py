@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     lookup_api_hash: SecretStr | None = Field(default=None, alias="LOOKUP_API_HASH")
     lookup_session: SecretStr | None = Field(default=None, alias="LOOKUP_SESSION")
     lookup_session_file: Path | None = Field(default=None, alias="LOOKUP_SESSION_FILE")
+    lookup_open_access: bool = Field(default=True, alias="LOOKUP_OPEN_ACCESS")
     lookup_free_limit: int = Field(default=5, ge=0, alias="LOOKUP_FREE_LIMIT")
 
     @model_validator(mode="after")

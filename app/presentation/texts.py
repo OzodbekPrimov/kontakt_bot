@@ -22,7 +22,7 @@ SERVER_START = (
     "<b>Kontakt Bot’ga xush kelibsiz!</b>\n\n"
     "Raqam yoki kontakt yuboring. Bot Telegram’da raqam orqali profilni tekshiradi "
     "va natijani shu chatga yuboradi.\n"
-    "Birinchi qidiruvda bepul limit ochiladi. Qoldiq: /lookup_balance.\n\n"
+    "Qidiruv hammaga ochiq; ilova kontakt kvotasi qo‘ymaydi.\n\n"
     "Profil topilishi va sizning akkauntingizda ochilishi Telegram maxfiylik "
     "sozlamalariga bog‘liq."
 )
@@ -32,7 +32,7 @@ SERVER_PRIVACY = (
     "• Yuborgan raqamingiz Telegram’da tekshirish uchun bazadagi navbatda vaqtincha saqlanadi. "
     "Tekshiruv yakunlangach bazadan o‘chiriladi.\n"
     "• Raqam va natija Telegram chat tarixida qoladi.\n"
-    "• Sizning Telegram ID, profil nomi, username, faollik, tarif va qidiruv hisoblari saqlanadi.\n"
+    "• Sizning Telegram ID, profil nomi, username, faollik va qidiruv hisoblari saqlanadi.\n"
     "• Raqam egasining maxfiylik sozlamasi qidiruvga to‘sqinlik qilishi mumkin.\n"
     "• Adminga yuborgan murojaatingiz va admin javoblari saqlanadi."
 )

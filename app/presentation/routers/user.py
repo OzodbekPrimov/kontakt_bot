@@ -47,6 +47,9 @@ async def navigation(message: Message, state: FSMContext, context: AppContext) -
         if context.lookup_worker is None:
             await message.answer("Server qidiruvi hozir yoqilmagan.")
             return
+        if context.lookup_worker.open_access:
+            await message.answer("Qidiruv hammaga ochiq. Ilovada kontakt kvotasi yo‘q.")
+            return
         balance = await context.storage.lookup_balance(message.from_user.id)
         if balance is None:
             if context.lookup_worker.free_limit:

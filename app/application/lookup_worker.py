@@ -18,11 +18,19 @@ class Resolver(Protocol):
 
 
 class LookupWorker:
-    def __init__(self, storage, gateway, resolver: Resolver, free_limit: int) -> None:
+    def __init__(
+        self,
+        storage,
+        gateway,
+        resolver: Resolver,
+        free_limit: int,
+        open_access: bool = False,
+    ) -> None:
         self.storage = storage
         self.gateway = gateway
         self.resolver = resolver
         self.free_limit = free_limit
+        self.open_access = open_access
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:

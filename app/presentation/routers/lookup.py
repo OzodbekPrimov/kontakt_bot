@@ -34,6 +34,7 @@ async def lookup(message: Message, context: AppContext) -> None:
             phone.e164,
             phone.masked,
             context.lookup_worker.free_limit,
+            context.lookup_worker.open_access,
         )
         if outcome == "queued":
             await message.answer(f"So‘rov #{request_id} navbatga olindi. Natija shu chatga keladi.")
