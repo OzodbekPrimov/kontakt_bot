@@ -54,13 +54,17 @@ async def lookup_status(message: Message, context: AppContext) -> None:
     stats = await context.storage.lookup_status()
     pending = stats.get("pending:0", 0) + stats.get("resolving:0", 0)
     found = stats.get("sent:1", 0)
-    unresolved = stats.get("sent:0", 0)
+    unresolved = stats.get("reason:not_visible", 0)
+    failed = stats.get("reason:technical_error", 0)
+    legacy = stats.get("reason:legacy", 0)
     uncertain = stats.get("unknown:0", 0) + stats.get("unknown:1", 0)
     wait = max(0, stats["next_allowed_at"] - timestamp())
     await message.answer(
         f"<b>Qidiruv holati</b>\nNavbatda: {pending}\n"
         f"Topilib yetkazilgan: {found}\n"
-        f"Aniqlanmagan yoki xato: {unresolved}\n"
+        f"Raqam bo‘yicha ko‘rinmagan: {unresolved}\n"
+        f"Texnik xato: {failed}\n"
+        f"Eski tasnifsiz natija: {legacy}\n"
         f"Yetkazish holati noma’lum: {uncertain}\n"
         f"Keyingi qidiruvgacha: {wait} soniya"
     )

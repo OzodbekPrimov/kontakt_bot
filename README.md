@@ -66,7 +66,8 @@ Pilot hammaga ochiq: bot foydalanuvchisiga ilova ichidagi qidiruv kvotasi qo‘y
 `/lookup_balance` ham ochiq rejimni ko‘rsatadi. Eski tarif yozuvlari bazada qoladi, ammo ochiq
 rejimdagi yangi qidiruvlarga ta’sir qilmaydi. Pullik tarif berish buyrug‘i botda yoqilmagan.
 Admin `/lookup_status` orqali navbat, yetkazilgan va aniqlanmagan natijalar hamda Telegram
-kutish muddatini ko‘radi. Bu hisoblar telefon raqamlarini ko‘rsatmaydi.
+kutish muddatini ko‘radi. Aniqlanmagan raqam va texnik xato alohida sanaladi. Bu hisoblar
+telefon raqamlarini ko‘rsatmaydi.
 Telegram’ning raqam qidirish tezligi va `FLOOD_WAIT` cheklovlari saqlanadi. Ko‘p akkauntli
 qidiruv hali yo‘q.
 
@@ -75,9 +76,12 @@ kontaktga saqlamasdan bajariladi. Rasmiy 3 soniyalik oraliq va Telegram qaytarga
 muddati saqlanadi. Tarmoq timeoutida yuborish natijasi noma’lum bo‘lsa avtomatik qayta
 yuborilmaydi.
 Telegram foydalanuvchining profil havolasini ocha olganini botga tasdiqlamaydi.
+`PHONE_NOT_OCCUPIED` natijasi akkaunt umuman yo‘qligini isbotlamaydi: Telegram maxfiylik
+sozlamasida ham shu javobni qaytaradi. Bot buni «raqam bo‘yicha ko‘rinmadi» deb ko‘rsatadi;
+`FLOOD_WAIT` paytida so‘rov navbatda qoladi, boshqa texnik xatolar esa alohida natija bo‘ladi.
 
 `data/bot.sqlite3`dagi eskirgan `usage_events.success` qidiruv natijasi sifatida ishlatilmaydi.
-Yangi so‘rovlar va kutish holati alohida saqlanadi. Bazaning versiyasi 2 ga
+Yangi so‘rovlar va kutish holati alohida saqlanadi. Bazaning versiyasi 3 ga
 avtomatik o‘tadi; productionda yoqishdan oldin izchil backup oling. Navbatdagi raqamlar ishlov
 tugaguncha bazada ochiq shaklda turadi, yakuniy holatga o‘tgach to‘liq raqam o‘chiriladi.
 Shu sabab baza fayli va backuplarga kirishni cheklang; raqamlar Telegram chat tarixida ham qoladi.

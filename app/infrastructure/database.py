@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS lookup_requests (
     due_at INTEGER NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     found INTEGER NOT NULL DEFAULT 0,
+    resolution_kind TEXT,
     result_text TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -152,11 +153,17 @@ class Database:
                 version = (await cursor.fetchone())[0]
             if version == 0:
                 await connection.executescript(SCHEMA)
-            elif version not in (1, 2):
+            elif version not in (1, 2, 3):
                 raise RuntimeError("Unsupported database version; update the application")
             if version < 2:
                 await connection.executescript(LOOKUP_SCHEMA)
                 await connection.execute("PRAGMA user_version = 2")
+            if version == 2:
+                await connection.execute(
+                    "ALTER TABLE lookup_requests ADD COLUMN resolution_kind TEXT"
+                )
+            if version < 3:
+                await connection.execute("PRAGMA user_version = 3")
             # A lookup can be retried. A delivery may already have reached the user.
             await connection.execute(
                 "UPDATE lookup_requests SET status='pending' WHERE status='resolving'"
@@ -294,6 +301,12 @@ class Database:
             "SELECT status,found,count(*) AS n FROM lookup_requests GROUP BY status,found"
         )
         result = {f"{row['status']}:{row['found']}": row["n"] for row in rows}
+        kinds = await self._rows(
+            "SELECT coalesce(resolution_kind,'legacy') AS resolution_kind,count(*) AS n "
+            "FROM lookup_requests WHERE status='sent' AND found=0 "
+            "GROUP BY coalesce(resolution_kind,'legacy')"
+        )
+        result.update({f"reason:{row['resolution_kind']}": row["n"] for row in kinds})
         state = await self._rows("SELECT next_allowed_at FROM lookup_state WHERE id=1")
         result["next_allowed_at"] = state[0]["next_allowed_at"]
         return result
@@ -418,7 +431,7 @@ class Database:
                     "UPDATE lookup_state SET next_allowed_at=? WHERE id=1", (now + 4,)
                 )
                 await self._connection.commit()
-                return dict(row)
+                return {**dict(row), "attempts": row["attempts"] + 1}
             except BaseException:
                 await self._connection.rollback()
                 raise
@@ -443,11 +456,18 @@ class Database:
                 await self._connection.rollback()
                 raise
 
-    async def complete_lookup_resolution(self, request_id: int, found: bool, text: str) -> None:
+    async def complete_lookup_resolution(
+        self, request_id: int, found: bool, text: str, resolution_kind: str
+    ) -> None:
+        if resolution_kind not in ("found", "not_visible", "technical_error"):
+            raise ValueError("Invalid lookup resolution kind")
+        if found != (resolution_kind == "found"):
+            raise ValueError("Lookup result and resolution kind disagree")
         await self._write(
-            "UPDATE lookup_requests SET status='delivery_pending',found=?,result_text=?,"
-            "updated_at=? WHERE id=? AND status='resolving'",
-            (int(found), text, timestamp(), request_id),
+            "UPDATE lookup_requests SET status='delivery_pending',found=?,"
+            "resolution_kind=?,result_text=?,updated_at=? "
+            "WHERE id=? AND status='resolving'",
+            (int(found), resolution_kind, text, timestamp(), request_id),
         )
 
     async def claim_lookup_delivery(self) -> dict | None:

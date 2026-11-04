@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.application.lookup_worker import LookupWorker
 from app.domain.models import DeliveryStatus, UserProfile
-from app.infrastructure.database import SCHEMA, Database
+from app.infrastructure.database import LOOKUP_SCHEMA, SCHEMA, Database
 from app.infrastructure.user_lookup import LookupFloodWait, ResolvedAccount
 
 
@@ -70,8 +70,24 @@ class ServerLookupTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.process_one()
         self.assertEqual((await self.db.lookup_balance(1))[:2], (5, 5))
         self.assertIn("maxfiylik", self.gateway.sent[0][1])
+        self.assertIn("akkaunt yo‘qligini tasdiqlamaydi", self.gateway.sent[0][1])
         stats = await self.db.lookup_status()
         self.assertEqual(stats["sent:0"], 1)
+        self.assertEqual(stats["reason:not_visible"], 1)
+
+    async def test_technical_error_is_separate_and_not_charged(self):
+        await self.enqueue(1)
+        self.resolver.result = RuntimeError("temporary lookup failure")
+        for attempt in range(3):
+            if attempt:
+                await self.db._write("UPDATE lookup_requests SET due_at=0", ())
+                await self.db._write("UPDATE lookup_state SET next_allowed_at=0")
+            await self.worker.process_one()
+        await self.worker.process_one()
+        self.assertEqual((await self.db.lookup_balance(1))[:2], (5, 5))
+        self.assertIn("Tekshiruvni yakunlab", self.gateway.sent[0][1])
+        stats = await self.db.lookup_status()
+        self.assertEqual(stats["reason:technical_error"], 1)
 
     async def test_delivery_unknown_is_never_charged_or_retried(self):
         await self.enqueue(1)
@@ -182,3 +198,21 @@ class ServerLookupTests(unittest.IsolatedAsyncioTestCase):
         self.db = await Database.open(self.path)
         self.assertEqual((await self.db.get_user(1)).first_name, "Existing")
         self.assertEqual((await self.enqueue(1))[1], "queued")
+
+    async def test_version_two_database_adds_resolution_kind(self):
+        await self.db.close()
+        self.path.unlink()
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.executescript(SCHEMA)
+            old_schema = LOOKUP_SCHEMA.replace("    resolution_kind TEXT,\n", "")
+            connection.executescript(old_schema)
+            connection.execute("PRAGMA user_version=2")
+            connection.execute("INSERT INTO users VALUES (1,'Existing',NULL,NULL,1,1,0)")
+            connection.commit()
+        finally:
+            connection.close()
+        self.db = await Database.open(self.path)
+        self.assertEqual((await self.db.get_user(1)).first_name, "Existing")
+        columns = await self.db._rows("PRAGMA table_info(lookup_requests)")
+        self.assertIn("resolution_kind", {column["name"] for column in columns})

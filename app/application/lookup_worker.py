@@ -75,6 +75,7 @@ class LookupWorker:
         try:
             account = await self.resolver.resolve(request["phone"])
         except LookupFloodWait as exc:
+            logger.warning("Telegram lookup rate limited; waiting %s seconds", exc.seconds)
             await self.storage.defer_lookup(request["id"], exc.seconds)
             return True
         except Exception as exc:
@@ -84,6 +85,7 @@ class LookupWorker:
                     request["id"],
                     False,
                     "Tekshiruvni yakunlab bo‘lmadi. Limit ayrilmadi.",
+                    "technical_error",
                 )
             else:
                 await self.storage.defer_lookup(
@@ -95,8 +97,10 @@ class LookupWorker:
                 request["id"],
                 False,
                 f"{escape(request['masked_phone'])}: raqam orqali Telegram profili aniqlanmadi. "
-                "Akkaunt yo‘q yoki uning maxfiylik sozlamasi qidiruvga ruxsat bermaydi. "
-                "Limit ayrilmaydi.",
+                "Bu natija akkaunt yo‘qligini tasdiqlamaydi: akkaunt mavjud "
+                "bo‘lmasligi yoki maxfiylik sozlamasi ushbu xizmat akkauntidan "
+                "qidirishga ruxsat bermasligi mumkin. Limit ayrilmaydi.",
+                "not_visible",
             )
         else:
             name = " ".join(filter(None, (account.first_name, account.last_name)))
@@ -116,5 +120,6 @@ class LookupWorker:
                 f"Username: {username}\n"
                 f'<a href="{link}">Profilni ochish</a>\n\n'
                 "Profilni sizning akkauntingizda ochish Telegram maxfiylik sozlamalariga bog‘liq.",
+                "found",
             )
         return True
