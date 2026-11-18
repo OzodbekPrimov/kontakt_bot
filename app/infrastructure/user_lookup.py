@@ -21,6 +21,18 @@ class LookupFloodWait(Exception):
         super().__init__("Telegram requested a lookup delay")
 
 
+def wire_phone(phone: str) -> str:
+    """contacts.resolvePhone takes bare digits, as official clients send them.
+
+    Telethon forwards the string untouched; a leading '+' makes Telegram answer
+    PHONE_NOT_OCCUPIED even for accounts that are findable by number.
+    """
+    digits = "".join(char for char in phone if char.isdigit())
+    if not digits:
+        raise ValueError("Phone number has no digits")
+    return digits
+
+
 class UserLookupClient:
     """A single, explicitly configured user session. No interactive login in the bot."""
 
@@ -54,8 +66,14 @@ class UserLookupClient:
         from telethon import functions
         from telethon.errors import FloodWaitError, PhoneNotOccupiedError
 
+        # Telethon gives up after its own reconnect attempts; recover instead of
+        # failing every queued request until a manual restart.
+        if not self._client.is_connected():
+            await self._client.connect()
         try:
-            result = await self._client(functions.contacts.ResolvePhoneRequest(phone=phone))
+            result = await self._client(
+                functions.contacts.ResolvePhoneRequest(phone=wire_phone(phone))
+            )
         except PhoneNotOccupiedError:
             return None
         except FloodWaitError as exc:
