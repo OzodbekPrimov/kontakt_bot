@@ -69,7 +69,14 @@ Admin `/lookup_status` orqali navbat, yetkazilgan va aniqlanmagan natijalar hamd
 kutish muddatini ko‘radi. Aniqlanmagan raqam va texnik xato alohida sanaladi. Bu hisoblar
 telefon raqamlarini ko‘rsatmaydi.
 Telegram’ning raqam qidirish tezligi va `FLOOD_WAIT` cheklovlari saqlanadi. Ko‘p akkauntli
-qidiruv hali yo‘q.
+qidiruv yo‘q va qo‘shilmaydi: limitni akkaunt almashtirib aylanib o‘tish akkauntlar banini
+va raqam bo‘yicha topishni yopgan odamlarning maxfiyligini buzish xavfini keltiradi.
+
+- Faqat egasi raqam bo‘yicha topishga ruxsat bergan profillar topiladi; yopiqlari ko‘rinmaydi.
+- Telegram ID biriktirilgan kontakt (`contact.user_id`) darhol javob oladi, qidiruv chaqirilmaydi.
+- Bitta user navbatda bir vaqtda `LOOKUP_MAX_ACTIVE_PER_USER` (sukut: 3) tadan ortiq so‘rov
+  ushlab turolmaydi; navbatga olishda taxminiy kutish vaqti ko‘rsatiladi.
+- Ketma-ket 3 ta texnik xatoda adminlarga bir marta ogohlantirish yuboriladi (sessiya buzilgan bo‘lishi mumkin).
 
 Raqam xalqaro formatga keltiriladi va navbatga yoziladi. Qidiruv `contacts.resolvePhone` bilan
 kontaktga saqlamasdan bajariladi. Rasmiy 3 soniyalik oraliq va Telegram qaytargan `FLOOD_WAIT`

@@ -7,6 +7,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.domain.models import (
+    LOOKUP_INTERVAL_SECONDS,
     TASHKENT,
     Campaign,
     GlobalStats,
@@ -19,9 +20,12 @@ from app.domain.models import (
 )
 
 PAGE_SIZE = 8
+# Requests that still hold a place in the lookup queue.
+_ACTIVE_LOOKUP = "('pending','resolving','delivery_pending','delivering')"
 
-SCHEMA = """
-BEGIN IMMEDIATE;
+# Each migration runs in its own transaction together with its user_version bump,
+# so a crash can never leave a half-applied schema behind.
+_SCHEMA_V1 = """
 CREATE TABLE users (
     telegram_id INTEGER PRIMARY KEY,
     first_name TEXT NOT NULL,
@@ -86,11 +90,9 @@ CREATE TABLE admin_actions (
     target_id INTEGER NOT NULL,
     created_at INTEGER NOT NULL
 );
-PRAGMA user_version = 1;
-COMMIT;
 """
 
-LOOKUP_SCHEMA = """
+_SCHEMA_V2 = """
 CREATE TABLE IF NOT EXISTS lookup_plans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(telegram_id),
@@ -113,7 +115,6 @@ CREATE TABLE IF NOT EXISTS lookup_requests (
     due_at INTEGER NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     found INTEGER NOT NULL DEFAULT 0,
-    resolution_kind TEXT,
     result_text TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -130,6 +131,25 @@ CREATE TABLE IF NOT EXISTS lookup_state (
     next_allowed_at INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO lookup_state(id, next_allowed_at) VALUES (1, 0);
+"""
+
+_SCHEMA_V3 = "ALTER TABLE lookup_requests ADD COLUMN resolution_kind TEXT;"
+
+MIGRATIONS: tuple[str, ...] = (_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3)
+SCHEMA_VERSION = len(MIGRATIONS)
+
+# Work that was in flight when the process stopped.
+_RECOVERY = """
+BEGIN IMMEDIATE;
+-- A lookup can safely be retried.
+UPDATE lookup_requests SET status='pending' WHERE status='resolving';
+-- A delivery may already have reached the user: never resend it blindly.
+UPDATE lookup_requests SET status='unknown',phone=NULL,result_text=NULL
+    WHERE status='delivering';
+UPDATE deliveries SET status='unknown' WHERE status='sending';
+UPDATE support_messages SET status='unknown' WHERE status='sending';
+UPDATE campaigns SET status='interrupted' WHERE status='running';
+COMMIT;
 """
 
 
@@ -149,43 +169,23 @@ class Database:
             await connection.execute("PRAGMA foreign_keys = ON")
             await connection.execute("PRAGMA journal_mode = WAL")
             await connection.execute("PRAGMA busy_timeout = 5000")
-            async with connection.execute("PRAGMA user_version") as cursor:
-                version = (await cursor.fetchone())[0]
-            if version == 0:
-                await connection.executescript(SCHEMA)
-            elif version not in (1, 2, 3):
-                raise RuntimeError("Unsupported database version; update the application")
-            if version < 2:
-                await connection.executescript(LOOKUP_SCHEMA)
-                await connection.execute("PRAGMA user_version = 2")
-            if version == 2:
-                await connection.execute(
-                    "ALTER TABLE lookup_requests ADD COLUMN resolution_kind TEXT"
-                )
-            if version < 3:
-                await connection.execute("PRAGMA user_version = 3")
-            # A lookup can be retried. A delivery may already have reached the user.
-            await connection.execute(
-                "UPDATE lookup_requests SET status='pending' WHERE status='resolving'"
-            )
-            await connection.execute(
-                "UPDATE lookup_requests SET status='unknown',phone=NULL,result_text=NULL "
-                "WHERE status='delivering'"
-            )
-            # A send may have reached Telegram before the process stopped. Never blindly resend it.
-            await connection.execute(
-                "UPDATE deliveries SET status = 'unknown' WHERE status = 'sending'"
-            )
-            await connection.execute(
-                "UPDATE support_messages SET status = 'unknown' WHERE status = 'sending'"
-            )
-            await connection.execute(
-                "UPDATE campaigns SET status = 'interrupted' WHERE status = 'running'"
-            )
+            await cls._migrate(connection)
+            await connection.executescript(_RECOVERY)
         except BaseException:
             await connection.close()
             raise
         return cls(connection)
+
+    @staticmethod
+    async def _migrate(connection: aiosqlite.Connection) -> None:
+        async with connection.execute("PRAGMA user_version") as cursor:
+            version = (await cursor.fetchone())[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError("Unsupported database version; update the application")
+        for target, script in enumerate(MIGRATIONS[version:], start=version + 1):
+            await connection.executescript(
+                f"BEGIN IMMEDIATE;\n{script}\nPRAGMA user_version = {target};\nCOMMIT;"
+            )
 
     async def close(self) -> None:
         await self._connection.close()
@@ -290,8 +290,8 @@ class Database:
         plan = rows[0]
         counts = await self._rows(
             "SELECT (SELECT count(*) FROM lookup_quota_events WHERE plan_id=?) + "
-            "(SELECT count(*) FROM lookup_requests WHERE plan_id=? AND status IN "
-            "('pending','resolving','delivery_pending','delivering')) AS used",
+            f"(SELECT count(*) FROM lookup_requests WHERE plan_id=? AND status IN "
+            f"{_ACTIVE_LOOKUP}) AS used",
             (plan["id"], plan["id"]),
         )
         return plan["capacity"], max(0, plan["capacity"] - counts[0]["used"]), plan["expires_at"]
@@ -307,9 +307,16 @@ class Database:
             "GROUP BY coalesce(resolution_kind,'legacy')"
         )
         result.update({f"reason:{row['resolution_kind']}": row["n"] for row in kinds})
+        result["active"] = await self.active_lookups()
         state = await self._rows("SELECT next_allowed_at FROM lookup_state WHERE id=1")
         result["next_allowed_at"] = state[0]["next_allowed_at"]
         return result
+
+    async def active_lookups(self) -> int:
+        rows = await self._rows(
+            f"SELECT count(*) AS n FROM lookup_requests WHERE status IN {_ACTIVE_LOOKUP}"
+        )
+        return rows[0]["n"]
 
     async def enqueue_lookup(
         self,
@@ -320,6 +327,7 @@ class Database:
         masked_phone: str,
         free_limit: int,
         open_access: bool = False,
+        max_active: int | None = None,
     ) -> tuple[int | None, str]:
         now = timestamp()
         async with self._lock:
@@ -333,6 +341,16 @@ class Database:
                 if duplicate:
                     await self._connection.commit()
                     return duplicate[0], "duplicate"
+                if max_active is not None:
+                    # One user must not be able to occupy the shared, rate-limited account.
+                    async with self._connection.execute(
+                        f"SELECT count(*) FROM lookup_requests WHERE user_id=? "
+                        f"AND status IN {_ACTIVE_LOOKUP}",
+                        (user_id,),
+                    ) as cursor:
+                        if (await cursor.fetchone())[0] >= max_active:
+                            await self._connection.commit()
+                            return None, "busy"
                 if open_access:
                     async with self._connection.execute(
                         "SELECT id,capacity FROM lookup_plans WHERE user_id=? "
@@ -380,8 +398,8 @@ class Database:
                         plan_id, capacity = plan
                     async with self._connection.execute(
                         "SELECT (SELECT count(*) FROM lookup_quota_events WHERE plan_id=?) + "
-                        "(SELECT count(*) FROM lookup_requests WHERE plan_id=? AND status IN "
-                        "('pending','resolving','delivery_pending','delivering'))",
+                        f"(SELECT count(*) FROM lookup_requests WHERE plan_id=? AND status IN "
+                        f"{_ACTIVE_LOOKUP})",
                         (plan_id, plan_id),
                     ) as cursor:
                         used = (await cursor.fetchone())[0]
@@ -428,7 +446,8 @@ class Database:
                     (now, row["id"]),
                 )
                 await self._connection.execute(
-                    "UPDATE lookup_state SET next_allowed_at=? WHERE id=1", (now + 4,)
+                    "UPDATE lookup_state SET next_allowed_at=? WHERE id=1",
+                    (now + LOOKUP_INTERVAL_SECONDS,),
                 )
                 await self._connection.commit()
                 return {**dict(row), "attempts": row["attempts"] + 1}

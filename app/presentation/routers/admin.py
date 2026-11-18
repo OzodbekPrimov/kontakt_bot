@@ -52,7 +52,7 @@ async def lookup_status(message: Message, context: AppContext) -> None:
         await message.answer("Server qidiruvi yoqilmagan.")
         return
     stats = await context.storage.lookup_status()
-    pending = stats.get("pending:0", 0) + stats.get("resolving:0", 0)
+    pending = stats["active"]
     found = stats.get("sent:1", 0)
     unresolved = stats.get("reason:not_visible", 0)
     failed = stats.get("reason:technical_error", 0)

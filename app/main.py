@@ -81,6 +81,8 @@ async def main() -> None:
                 lookup_client,
                 settings.lookup_free_limit,
                 settings.lookup_open_access,
+                max_active_per_user=settings.lookup_max_active_per_user,
+                admin_ids=admins,
             )
             lookup_worker.start()
         context = AppContext(

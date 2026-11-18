@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum
 
 TASHKENT = timezone(timedelta(hours=5), name="Asia/Tashkent")
+# Minimum spacing between two resolvePhone calls on the single lookup account.
+LOOKUP_INTERVAL_SECONDS = 4
 
 
 def timestamp() -> int:

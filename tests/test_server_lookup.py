@@ -2,10 +2,11 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.application.lookup_worker import LookupWorker
 from app.domain.models import DeliveryStatus, UserProfile
-from app.infrastructure.database import LOOKUP_SCHEMA, SCHEMA, Database
+from app.infrastructure.database import MIGRATIONS, SCHEMA_VERSION, Database
 from app.infrastructure.user_lookup import LookupFloodWait, ResolvedAccount
 
 
@@ -25,10 +26,27 @@ class FakeGateway:
     def __init__(self):
         self.status = DeliveryStatus.SENT
         self.sent = []
+        self.alerts = []
 
     async def send_lookup(self, user_id, html):
         self.sent.append((user_id, html))
         return self.status
+
+    async def send(self, user_id, payload):
+        self.alerts.append((user_id, payload.text))
+        return DeliveryStatus.SENT
+
+
+def build_database(path, version):
+    connection = sqlite3.connect(path)
+    try:
+        for script in MIGRATIONS[:version]:
+            connection.executescript(script)
+        connection.execute(f"PRAGMA user_version={version}")
+        connection.execute("INSERT INTO users VALUES (1,'Existing',NULL,NULL,1,1,0)")
+        connection.commit()
+    finally:
+        connection.close()
 
 
 class ServerLookupTests(unittest.IsolatedAsyncioTestCase):
@@ -188,13 +206,7 @@ class ServerLookupTests(unittest.IsolatedAsyncioTestCase):
     async def test_version_one_database_is_migrated_without_losing_users(self):
         await self.db.close()
         self.path.unlink()
-        connection = sqlite3.connect(self.path)
-        try:
-            connection.executescript(SCHEMA)
-            connection.execute("INSERT INTO users VALUES (1,'Existing',NULL,NULL,1,1,0)")
-            connection.commit()
-        finally:
-            connection.close()
+        build_database(self.path, 1)
         self.db = await Database.open(self.path)
         self.assertEqual((await self.db.get_user(1)).first_name, "Existing")
         self.assertEqual((await self.enqueue(1))[1], "queued")
@@ -202,17 +214,60 @@ class ServerLookupTests(unittest.IsolatedAsyncioTestCase):
     async def test_version_two_database_adds_resolution_kind(self):
         await self.db.close()
         self.path.unlink()
-        connection = sqlite3.connect(self.path)
-        try:
-            connection.executescript(SCHEMA)
-            old_schema = LOOKUP_SCHEMA.replace("    resolution_kind TEXT,\n", "")
-            connection.executescript(old_schema)
-            connection.execute("PRAGMA user_version=2")
-            connection.execute("INSERT INTO users VALUES (1,'Existing',NULL,NULL,1,1,0)")
-            connection.commit()
-        finally:
-            connection.close()
+        build_database(self.path, 2)
         self.db = await Database.open(self.path)
         self.assertEqual((await self.db.get_user(1)).first_name, "Existing")
         columns = await self.db._rows("PRAGMA table_info(lookup_requests)")
         self.assertIn("resolution_kind", {column["name"] for column in columns})
+
+    async def test_half_applied_migration_is_rolled_back_and_retried(self):
+        await self.db.close()
+        self.path.unlink()
+        build_database(self.path, 2)
+        broken = (*MIGRATIONS[:2], MIGRATIONS[2] + "\nSELECT * FROM missing_table;")
+        with patch("app.infrastructure.database.MIGRATIONS", broken):
+            with self.assertRaises(sqlite3.OperationalError):
+                await Database.open(self.path)
+        # The failed step left neither the column nor the version bump behind.
+        self.db = await Database.open(self.path)
+        version = await self.db._rows("PRAGMA user_version")
+        self.assertEqual(version[0]["user_version"], SCHEMA_VERSION)
+        self.assertEqual((await self.enqueue(1))[1], "queued")
+
+    async def test_blocked_lookup_delivery_marks_the_user_blocked(self):
+        self.resolver.result = None
+        self.gateway.status = DeliveryStatus.BLOCKED
+        await self.enqueue(1)
+        await self.worker.process_one()
+        await self.worker.process_one()
+        self.assertTrue((await self.db.get_user(1)).blocked)
+
+    async def test_status_counts_results_waiting_for_delivery_as_active(self):
+        self.resolver.result = None
+        await self.enqueue(1)
+        await self.worker.process_one()
+        self.assertEqual((await self.db.lookup_status())["active"], 1)
+
+    async def test_repeated_technical_errors_alert_admins_once(self):
+        self.worker.admin_ids = {99}
+        self.resolver.result = RuntimeError("session broken")
+        for message_id in range(1, 5):
+            await self.enqueue(message_id)
+        await self.db._write("UPDATE lookup_state SET next_allowed_at=0")
+        for _ in range(4):
+            await self.worker.process_one()
+            await self.db._write("UPDATE lookup_requests SET due_at=0")
+            await self.db._write("UPDATE lookup_state SET next_allowed_at=0")
+        self.assertEqual(len(self.gateway.alerts), 1)
+        self.assertEqual(self.gateway.alerts[0][0], 99)
+
+    async def test_per_user_active_cap_is_enforced_in_storage(self):
+        for message_id in (1, 2):
+            result = await self.db.enqueue_lookup(
+                1, 1, message_id, "+998901234567", "+99890***4567", 5, True, max_active=2
+            )
+            self.assertEqual(result[1], "queued")
+        result = await self.db.enqueue_lookup(
+            1, 1, 3, "+998901234567", "+99890***4567", 5, True, max_active=2
+        )
+        self.assertEqual(result, (None, "busy"))

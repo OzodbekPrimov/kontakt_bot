@@ -24,8 +24,7 @@ class LookupResult:
 class PhoneLookupService:
     """Creates client-side Telegram deep links without querying a Telegram account."""
 
-    def create_link(self, raw_phone: str) -> LookupResult:
-        phone = PhoneNumber.parse(raw_phone)
+    def create_link(self, phone: PhoneNumber) -> LookupResult:
         parsed = phonenumbers.parse(phone.e164, None)
         types = {
             PhoneNumberType.MOBILE: "Mobil",

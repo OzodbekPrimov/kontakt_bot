@@ -33,3 +33,18 @@ class PhoneNumber:
         if not phonenumbers.is_valid_number(parsed):
             raise InvalidPhoneNumber("Invalid phone number")
         return cls(phonenumbers.format_number(parsed, PhoneNumberFormat.E164))
+
+    @classmethod
+    def from_contact(cls, value: str, default_region: str = "UZ") -> PhoneNumber:
+        """Telegram contacts carry international numbers, usually without the leading '+'.
+
+        Parsing them against the default region would reject every foreign contact,
+        so the international reading wins; a locally saved number falls back to the region.
+        """
+        value = value.strip()
+        if value.startswith("+"):
+            return cls.parse(value, default_region)
+        try:
+            return cls.parse(f"+{value}", default_region)
+        except InvalidPhoneNumber:
+            return cls.parse(value, default_region)

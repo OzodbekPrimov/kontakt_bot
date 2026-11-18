@@ -182,16 +182,55 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.db.user_stats(1)).phone_requests, 1)
 
     async def test_server_lookup_queues_without_claiming_a_found_profile(self):
-        self.context.lookup_worker = SimpleNamespace(free_limit=5, open_access=True)
+        self.context.lookup_worker = SimpleNamespace(
+            free_limit=5, open_access=True, max_active_per_user=3
+        )
         await self.feed(1, "+998901234567")
         self.assertIn("navbatga olindi", self.messages(1)[-1].text)
         self.assertNotIn("Telegram profili aniqlandi", self.messages(1)[-1].text)
         rows = await self.db._rows("SELECT status FROM lookup_requests")
         self.assertEqual(rows, [{"status": "pending"}])
         self.assertIsNone(await self.db.lookup_balance(1))
+        self.assertEqual((await self.db.user_stats(1)).phone_requests, 1)
+
+    async def test_server_lookup_accepts_a_foreign_contact_without_plus(self):
+        self.context.lookup_worker = SimpleNamespace(
+            free_limit=5, open_access=True, max_active_per_user=3
+        )
+        await self.feed(1, contact={"phone_number": "79161234567", "first_name": "Ivan"})
+        self.assertIn("navbatga olindi", self.messages(1)[-1].text)
+        rows = await self.db._rows("SELECT phone FROM lookup_requests")
+        self.assertEqual(rows, [{"phone": "+79161234567"}])
+        self.assertEqual((await self.db.user_stats(1)).contacts, 1)
+
+    async def test_contact_with_telegram_id_is_answered_without_a_lookup(self):
+        self.context.lookup_worker = SimpleNamespace(
+            free_limit=5, open_access=True, max_active_per_user=3
+        )
+        await self.feed(
+            1, contact={"phone_number": "998901234567", "first_name": "Ali", "user_id": 55}
+        )
+        text = self.messages(1)[-1].text
+        self.assertIn("ID: <code>55</code>", text)
+        self.assertNotIn("@user1", text)
+        rows = await self.db._rows("SELECT count(*) AS n FROM lookup_requests")
+        self.assertEqual(rows[0]["n"], 0)
+
+    async def test_one_user_cannot_fill_the_shared_lookup_queue(self):
+        self.context.lookup_worker = SimpleNamespace(
+            free_limit=5, open_access=True, max_active_per_user=2
+        )
+        for _ in range(3):
+            await self.feed(1, "+998901234567")
+        self.assertIn("navbatda turibdi", self.messages(1)[-1].text)
+        self.assertIn("Taxminiy kutish", self.messages(1)[-2].text)
+        rows = await self.db._rows("SELECT count(*) AS n FROM lookup_requests")
+        self.assertEqual(rows[0]["n"], 2)
 
     async def test_lookup_status_is_admin_only(self):
-        self.context.lookup_worker = SimpleNamespace(free_limit=5, open_access=True)
+        self.context.lookup_worker = SimpleNamespace(
+            free_limit=5, open_access=True, max_active_per_user=3
+        )
         await self.feed(1, "/lookup_status")
         self.assertIn("faqat admin", self.messages(1)[-1].text)
         await self.feed(99, "/lookup_status")
